@@ -1,0 +1,429 @@
+import React, { useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
+  TextInput, RefreshControl, ActivityIndicator, Alert, Modal, ScrollView, Platform,
+} from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { EstadoBadge } from '@/constants/Colors';
+import { useAuth } from '@/context/AuthContext';
+import { useTheme } from '@/context/ThemeContext';
+import { Factura, EstadoFactura, Cliente } from '@/lib/types';
+import { useTasa } from '@/context/TasaContext';
+
+const TABS: { key: EstadoFactura | 'todas'; label: string }[] = [
+  { key: 'todas', label: 'Todas' },
+  { key: 'borrador', label: 'Borrador' },
+  { key: 'emitida', label: 'Emitida' },
+  { key: 'pagada', label: 'Pagada' },
+  { key: 'vencida', label: 'Vencida' },
+];
+
+function formatDate(d: string) {
+  return new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function DateInput({ label, value, onPress, colors }: { label: string; value: string; onPress: () => void; colors: any }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={{
+        flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6,
+        backgroundColor: colors.background, borderRadius: 10, borderWidth: 1,
+        borderColor: value ? colors.primary : colors.border, paddingHorizontal: 10, height: 40,
+      }}
+    >
+      <Ionicons name="calendar-outline" size={15} color={value ? colors.primary : colors.textMuted} />
+      <Text style={{ flex: 1, fontSize: 13, color: value ? colors.text : colors.textMuted }}>
+        {value ? formatDate(value) : label}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+export default function VentasScreen() {
+  const { colors, theme, setTheme, isDark } = useTheme();
+  const Colors = colors;
+  const styles = React.useMemo(() => getStyles(Colors), [Colors]);
+  const router = useRouter();
+  const { tenant_id } = useAuth();
+  const { estado, cliente_id } = useLocalSearchParams<{ estado: string; cliente_id: string }>();
+  const { formatUSD, formatBs } = useTasa();
+
+  const [ventas, setVentas] = useState<Factura[]>([]);
+  const [filtered, setFiltered] = useState<Factura[]>([]);
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [search, setSearch] = useState('');
+  const [activeTab, setActiveTab] = useState<EstadoFactura | 'todas'>('todas');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Filtros avanzados
+  const [fechaDesde, setFechaDesde] = useState('');
+  const [fechaHasta, setFechaHasta] = useState('');
+  const [clienteFilter, setClienteFilter] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [showClientePicker, setShowClientePicker] = useState(false);
+  const [clienteSearch, setClienteSearch] = useState('');
+
+  useEffect(() => {
+    if (estado) setActiveTab(estado as EstadoFactura);
+    if (cliente_id) {
+      setClienteFilter(cliente_id);
+      setShowFilters(true);
+    }
+  }, [estado, cliente_id]);
+
+  const loadVentas = useCallback(async () => {
+    const { data } = await supabase
+      .from('facturas')
+      .select('*, clientes(nombre, email)')
+      .order('fecha', { ascending: false });
+    if (data) setVentas(data as Factura[]);
+
+    const { data: clis } = await supabase
+      .from('clientes').select('id, nombre').eq('activo', true).order('nombre');
+    if (clis) setClientes(clis as Cliente[]);
+
+    setLoading(false);
+    setRefreshing(false);
+  }, []);
+
+  useEffect(() => {
+    loadVentas();
+    if (!tenant_id) return;
+    const channel = supabase.channel('realtime-ventas-v2')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'facturas' }, () => { loadVentas(); })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [loadVentas, tenant_id]);
+
+  useEffect(() => {
+    let result = ventas;
+    if (activeTab !== 'todas') result = result.filter(v => v.estado === activeTab);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(v =>
+        v.numero.toLowerCase().includes(q) ||
+        (v.clientes as any)?.nombre?.toLowerCase().includes(q)
+      );
+    }
+    if (clienteFilter) result = result.filter(v => v.cliente_id === clienteFilter);
+    if (fechaDesde) result = result.filter(v => v.fecha >= fechaDesde);
+    if (fechaHasta) result = result.filter(v => v.fecha <= fechaHasta);
+    setFiltered(result);
+  }, [ventas, activeTab, search, clienteFilter, fechaDesde, fechaHasta]);
+
+  const onRefresh = () => { setRefreshing(true); loadVentas(); };
+
+  const hasActiveFilters = !!(clienteFilter || fechaDesde || fechaHasta);
+
+  const clearFilters = () => {
+    setClienteFilter(null);
+    setFechaDesde('');
+    setFechaHasta('');
+    setClienteSearch('');
+  };
+
+  const clienteNombre = clienteFilter ? clientes.find(c => c.id === clienteFilter)?.nombre : null;
+
+  const promptFecha = (tipo: 'desde' | 'hasta') => {
+    Alert.prompt(
+      tipo === 'desde' ? 'Fecha desde (YYYY-MM-DD)' : 'Fecha hasta (YYYY-MM-DD)',
+      'Ej: 2025-01-01',
+      (text) => {
+        if (!text) return;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+          tipo === 'desde' ? setFechaDesde(text) : setFechaHasta(text);
+        } else {
+          Alert.alert('Formato incorrecto', 'Usa el formato YYYY-MM-DD');
+        }
+      },
+      'plain-text',
+      tipo === 'desde' ? fechaDesde : fechaHasta,
+    );
+  };
+
+  const renderItem = ({ item: v }: { item: Factura }) => {
+    const badge = EstadoBadge[v.estado];
+    return (
+      <TouchableOpacity style={styles.card} onPress={() => router.push(`/venta/${v.id}`)} activeOpacity={0.8}>
+        <View style={styles.cardTop}>
+          <View>
+            <Text style={styles.numero}>{v.numero}</Text>
+            <Text style={styles.cliente}>{(v as any).clientes?.nombre ?? '—'}</Text>
+          </View>
+          <View style={styles.cardTopRight}>
+            <Text style={styles.total}>{formatUSD(Number(v.total))}</Text>
+            <Text style={styles.totalBs}>{formatBs(Number(v.total))}</Text>
+            <View style={[styles.badge, { backgroundColor: badge.bg }]}>
+              <Text style={[styles.badgeText, { color: badge.text }]}>{badge.label}</Text>
+            </View>
+          </View>
+        </View>
+        <View style={styles.cardBottom}>
+          <Ionicons name="calendar-outline" size={13} color={Colors.textMuted} />
+          <Text style={styles.fecha}>{formatDate(v.fecha)}</Text>
+          {v.fecha_vencimiento && (
+            <>
+              <Text style={styles.dot}> · </Text>
+              <Ionicons name="time-outline" size={13} color={Colors.textMuted} />
+              <Text style={styles.fecha}> Vence {formatDate(v.fecha_vencimiento)}</Text>
+            </>
+          )}
+          {(v.descuento_pct > 0 || v.descuento_monto > 0) && (
+            <View style={[styles.descuentoChip, { backgroundColor: Colors.warningBg }]}>
+              <Text style={[styles.descuentoText, { color: Colors.warning }]}>
+                {v.descuento_pct > 0 ? `-${v.descuento_pct}%` : `-${formatUSD(v.descuento_monto)}`}
+              </Text>
+            </View>
+          )}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <View style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.title}>Ventas</Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <TouchableOpacity
+            style={[styles.filterBtn, hasActiveFilters && { backgroundColor: Colors.primaryBg, borderColor: Colors.primary }]}
+            onPress={() => setShowFilters(!showFilters)}
+          >
+            <Ionicons name="options-outline" size={18} color={hasActiveFilters ? Colors.primary : Colors.textSecondary} />
+            {hasActiveFilters && <View style={styles.filterDot} />}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.addBtn} onPress={() => router.push('/pos')}>
+            <Ionicons name="add" size={22} color={Colors.white} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Panel de filtros */}
+      {showFilters && (
+        <View style={[styles.filtersPanel, { backgroundColor: Colors.surface, borderColor: Colors.border }]}>
+          <View style={styles.filterRow}>
+            <DateInput label="Desde" value={fechaDesde} onPress={() => promptFecha('desde')} colors={Colors} />
+            <DateInput label="Hasta" value={fechaHasta} onPress={() => promptFecha('hasta')} colors={Colors} />
+          </View>
+          <TouchableOpacity
+            style={[styles.clientePickerBtn, { borderColor: clienteFilter ? Colors.primary : Colors.border, backgroundColor: Colors.background }]}
+            onPress={() => setShowClientePicker(true)}
+          >
+            <Ionicons name="person-outline" size={15} color={clienteFilter ? Colors.primary : Colors.textMuted} />
+            <Text style={{ flex: 1, fontSize: 13, color: clienteNombre ? Colors.text : Colors.textMuted }}>
+              {clienteNombre || 'Filtrar por cliente...'}
+            </Text>
+            {clienteFilter && (
+              <TouchableOpacity onPress={() => setClienteFilter(null)}>
+                <Ionicons name="close-circle" size={16} color={Colors.textMuted} />
+              </TouchableOpacity>
+            )}
+          </TouchableOpacity>
+          {hasActiveFilters && (
+            <TouchableOpacity style={[styles.clearFiltersBtn, { borderColor: Colors.border }]} onPress={clearFilters}>
+              <Text style={[styles.clearFiltersText, { color: Colors.error }]}>✕ Limpiar filtros</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* Search */}
+      <View style={styles.searchWrapper}>
+        <Ionicons name="search-outline" size={17} color={Colors.textMuted} style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Buscar por número o cliente..."
+          placeholderTextColor={Colors.textMuted}
+          value={search}
+          onChangeText={setSearch}
+        />
+        {search.length > 0 && (
+          <TouchableOpacity onPress={() => setSearch('')}>
+            <Ionicons name="close-circle" size={17} color={Colors.textMuted} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Chips de filtros activos */}
+      {hasActiveFilters && (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeFiltersRow}>
+          {clienteNombre && (
+            <View style={[styles.activeChip, { backgroundColor: Colors.primaryBg }]}>
+              <Text style={[styles.activeChipText, { color: Colors.primary }]}>👤 {clienteNombre}</Text>
+              <TouchableOpacity onPress={() => setClienteFilter(null)}>
+                <Ionicons name="close" size={12} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          )}
+          {fechaDesde && (
+            <View style={[styles.activeChip, { backgroundColor: Colors.primaryBg }]}>
+              <Text style={[styles.activeChipText, { color: Colors.primary }]}>Desde {formatDate(fechaDesde)}</Text>
+              <TouchableOpacity onPress={() => setFechaDesde('')}>
+                <Ionicons name="close" size={12} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          )}
+          {fechaHasta && (
+            <View style={[styles.activeChip, { backgroundColor: Colors.primaryBg }]}>
+              <Text style={[styles.activeChipText, { color: Colors.primary }]}>Hasta {formatDate(fechaHasta)}</Text>
+              <TouchableOpacity onPress={() => setFechaHasta('')}>
+                <Ionicons name="close" size={12} color={Colors.primary} />
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+      )}
+
+      {/* Status Tabs */}
+      <FlatList
+        data={TABS} horizontal showsHorizontalScrollIndicator={false}
+        keyExtractor={t => t.key} contentContainerStyle={styles.tabsRow}
+        renderItem={({ item: t }) => (
+          <TouchableOpacity
+            style={[styles.tab, activeTab === t.key && styles.tabActive]}
+            onPress={() => setActiveTab(t.key)}
+          >
+            <Text style={[styles.tabText, activeTab === t.key && styles.tabTextActive]}>{t.label}</Text>
+          </TouchableOpacity>
+        )}
+      />
+
+      {/* Contador */}
+      <Text style={styles.count}>{filtered.length} venta{filtered.length !== 1 ? 's' : ''}</Text>
+
+      {/* List */}
+      {loading ? (
+        <View style={styles.centered}><ActivityIndicator color={Colors.primary} /></View>
+      ) : (
+        <FlatList
+          data={filtered} keyExtractor={v => v.id} renderItem={renderItem}
+          contentContainerStyle={styles.list}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="cart-outline" size={48} color={Colors.textMuted} />
+              <Text style={styles.emptyText}>No hay ventas registradas</Text>
+              {!hasActiveFilters && (
+                <TouchableOpacity style={styles.emptyBtn} onPress={() => router.push('/pos')}>
+                  <Text style={styles.emptyBtnText}>Nueva Venta</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          }
+        />
+      )}
+
+      {/* Cliente picker modal */}
+      <Modal visible={showClientePicker} transparent animationType="slide">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' }}>
+          <View style={[styles.pickerSheet, { backgroundColor: Colors.surface }]}>
+            <View style={[styles.pickerHandle, { backgroundColor: Colors.border }]} />
+            <Text style={[styles.pickerTitle, { color: Colors.text }]}>Seleccionar Cliente</Text>
+            <TextInput
+              style={[styles.pickerSearch, { color: Colors.text, borderColor: Colors.border, backgroundColor: Colors.background }]}
+              placeholder="Buscar..."
+              placeholderTextColor={Colors.textMuted}
+              value={clienteSearch}
+              onChangeText={setClienteSearch}
+            />
+            <ScrollView style={{ maxHeight: 300 }}>
+              <TouchableOpacity
+                style={[styles.pickerRow, { borderBottomColor: Colors.border }]}
+                onPress={() => { setClienteFilter(null); setShowClientePicker(false); }}
+              >
+                <Text style={[styles.pickerRowText, { color: Colors.textMuted }]}>Todos los clientes</Text>
+              </TouchableOpacity>
+              {clientes
+                .filter(c => c.nombre.toLowerCase().includes(clienteSearch.toLowerCase()))
+                .map(c => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={[styles.pickerRow, { borderBottomColor: Colors.border }, clienteFilter === c.id && { backgroundColor: Colors.primaryBg }]}
+                    onPress={() => { setClienteFilter(c.id); setShowClientePicker(false); setClienteSearch(''); }}
+                  >
+                    <Text style={[styles.pickerRowText, { color: clienteFilter === c.id ? Colors.primary : Colors.text }]}>{c.nombre}</Text>
+                    {clienteFilter === c.id && <Ionicons name="checkmark" size={16} color={Colors.primary} />}
+                  </TouchableOpacity>
+                ))
+              }
+            </ScrollView>
+            <TouchableOpacity style={[styles.pickerClose, { backgroundColor: Colors.background }]} onPress={() => setShowClientePicker(false)}>
+              <Text style={{ color: Colors.textSecondary, fontWeight: '600' }}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const getStyles = (Colors: any) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: Colors.background },
+  header: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 24, paddingTop: 56, paddingBottom: 16,
+  },
+  title: { fontSize: 28, fontWeight: '800', color: Colors.text },
+  addBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center' },
+  filterBtn: { width: 40, height: 40, borderRadius: 12, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border, justifyContent: 'center', alignItems: 'center', position: 'relative' },
+  filterDot: { position: 'absolute', top: 8, right: 8, width: 7, height: 7, borderRadius: 4, backgroundColor: Colors.primary },
+
+  filtersPanel: { marginHorizontal: 24, marginBottom: 12, padding: 14, borderRadius: 14, borderWidth: 1, gap: 10 },
+  filterRow: { flexDirection: 'row', gap: 10 },
+  clientePickerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, height: 40, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10 },
+  clearFiltersBtn: { alignItems: 'center', paddingVertical: 8, borderTopWidth: 1, marginTop: 4 },
+  clearFiltersText: { fontSize: 13, fontWeight: '600' },
+
+  activeFiltersRow: { paddingHorizontal: 24, paddingBottom: 8, gap: 8 },
+  activeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
+  activeChipText: { fontSize: 12, fontWeight: '600' },
+
+  searchWrapper: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surface, marginHorizontal: 24,
+    borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 12, height: 44, marginBottom: 12,
+  },
+  searchIcon: { marginRight: 8 },
+  searchInput: { flex: 1, color: Colors.text, fontSize: 14 },
+  count: { fontSize: 12, color: Colors.textMuted, paddingHorizontal: 24, marginBottom: 6 },
+  tabsRow: { paddingHorizontal: 24, paddingBottom: 12, gap: 8 },
+  tab: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border },
+  tabActive: { backgroundColor: Colors.primaryBg, borderColor: Colors.primary },
+  tabText: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500' },
+  tabTextActive: { color: Colors.primary, fontWeight: '700' },
+  centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  list: { padding: 24, paddingTop: 4, gap: 10 },
+  card: { backgroundColor: Colors.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.border },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+  cardTopRight: { alignItems: 'flex-end', gap: 6 },
+  numero: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  cliente: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
+  total: { fontSize: 17, fontWeight: '800', color: Colors.text },
+  totalBs: { fontSize: 12, color: Colors.success, fontWeight: '600' },
+  badge: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20, marginTop: 4 },
+  badgeText: { fontSize: 11, fontWeight: '600' },
+  cardBottom: { flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: Colors.border, paddingTop: 10, flexWrap: 'wrap', gap: 4 },
+  fecha: { fontSize: 12, color: Colors.textMuted, marginLeft: 4 },
+  dot: { color: Colors.textMuted },
+  descuentoChip: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  descuentoText: { fontSize: 10, fontWeight: '700' },
+  empty: { alignItems: 'center', paddingTop: 80 },
+  emptyText: { color: Colors.textMuted, marginTop: 12, fontSize: 16 },
+  emptyBtn: { marginTop: 16, backgroundColor: Colors.primaryBg, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 10 },
+  emptyBtnText: { color: Colors.primary, fontWeight: '600' },
+
+  pickerSheet: { borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 40 },
+  pickerHandle: { width: 40, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: 16 },
+  pickerTitle: { fontSize: 18, fontWeight: '800', marginBottom: 12 },
+  pickerSearch: { height: 42, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, marginBottom: 8, fontSize: 14 },
+  pickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1 },
+  pickerRowText: { fontSize: 15 },
+  pickerClose: { marginTop: 12, height: 44, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+});

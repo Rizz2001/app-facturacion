@@ -1,0 +1,642 @@
+import React, { useMemo } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import {
+  View, Text, TextInput, TouchableOpacity, StyleSheet,
+  ScrollView, FlatList, Modal, KeyboardAvoidingView,
+  Platform, ActivityIndicator, Alert,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/AuthContext';
+import { useTheme } from '@/context/ThemeContext';
+import { Cliente, Producto, FacturaItem } from '@/lib/types';
+import { useTasa } from '@/context/TasaContext';
+
+type Step = 'cliente' | 'items' | 'detalles';
+
+export default function NuevaFacturaScreen() {
+  const { colors, theme, setTheme, isDark } = useTheme();
+  const Colors = colors;
+  const styles = React.useMemo(() => getStyles(Colors), [Colors]);
+  const router = useRouter();
+  const { tenant_id } = useAuth();
+  const { formatUSD } = useTasa();
+  const [step, setStep] = useState<Step>('cliente');
+
+  // Data
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [productos, setProductos] = useState<Producto[]>([]);
+  const [clienteSearch, setClienteSearch] = useState('');
+  const [productoSearch, setProductoSearch] = useState('');
+
+  // Selections
+  const [selectedCliente, setSelectedCliente] = useState<Cliente | null>(null);
+  const [items, setItems] = useState<FacturaItem[]>([]);
+  const [notas, setNotas] = useState('');
+  const [fechaVencimiento, setFechaVencimiento] = useState('');
+
+  // Modal
+  const [showProductoModal, setShowProductoModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const loadClientes = useCallback(async () => {
+    const { data } = await supabase.from('clientes').select('*').eq('activo', true).order('nombre');
+    if (data) setClientes(data as Cliente[]);
+  }, []);
+
+  const loadProductos = useCallback(async () => {
+    const { data } = await supabase.from('productos').select('*').eq('activo', true).order('nombre');
+    if (data) setProductos(data as Producto[]);
+  }, []);
+
+  useEffect(() => {
+    loadClientes();
+    loadProductos();
+  }, [loadClientes, loadProductos]);
+
+  // Totals
+  const subtotal = items.reduce((s, i) => s + i.subtotal, 0);
+  const totalIva = items.reduce((s, i) => s + (i.subtotal * i.iva / 100), 0);
+  const total = subtotal + totalIva;
+
+  const addProducto = (p: Producto) => {
+    const existing = items.findIndex(i => i.producto_id === p.id);
+    if (existing >= 0) {
+      const copy = [...items];
+      copy[existing].cantidad += 1;
+      copy[existing].subtotal = copy[existing].cantidad * copy[existing].precio_unitario;
+      copy[existing].total = copy[existing].subtotal * (1 + copy[existing].iva / 100);
+      setItems(copy);
+    } else {
+      const item: FacturaItem = {
+        producto_id: p.id,
+        descripcion: p.nombre,
+        cantidad: 1,
+        precio_unitario: Number(p.precio),
+        iva: Number(p.iva),
+        subtotal: Number(p.precio),
+        total: Number(p.precio) * (1 + Number(p.iva) / 100),
+        orden: items.length,
+      };
+      setItems(prev => [...prev, item]);
+    }
+    setShowProductoModal(false);
+  };
+
+  const addItemManual = () => {
+    const item: FacturaItem = {
+      descripcion: '',
+      cantidad: 1,
+      precio_unitario: 0,
+      iva: 21,
+      subtotal: 0,
+      total: 0,
+      orden: items.length,
+    };
+    setItems(prev => [...prev, item]);
+  };
+
+  const updateItem = (index: number, field: keyof FacturaItem, value: any) => {
+    const copy = [...items];
+    (copy[index] as any)[field] = value;
+    // Recalculate
+    const cantidad = field === 'cantidad' ? Number(value) : Number(copy[index].cantidad);
+    const precio = field === 'precio_unitario' ? Number(value) : Number(copy[index].precio_unitario);
+    const iva = field === 'iva' ? Number(value) : Number(copy[index].iva);
+    copy[index].subtotal = cantidad * precio;
+    copy[index].total = copy[index].subtotal * (1 + iva / 100);
+    setItems(copy);
+  };
+
+  const removeItem = (index: number) => {
+    setItems(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedCliente) { Alert.alert('Error', 'Selecciona un cliente'); return; }
+    if (items.length === 0) { Alert.alert('Error', 'Agrega al menos un producto o servicio'); return; }
+    if (items.some(i => !i.descripcion.trim())) { Alert.alert('Error', 'Todos los ítems deben tener descripción'); return; }
+
+    try {
+      setLoading(true);
+
+      // Generate invoice number
+      const { data: numData } = await supabase.rpc('generar_numero_factura', {
+        p_user_id: tenant_id,
+      });
+      const numero = numData || `${new Date().getFullYear()}-0001`;
+
+      // Create factura
+      const { data: factura, error: facturaError } = await supabase
+        .from('facturas')
+        .insert({
+          user_id: tenant_id,
+          cliente_id: selectedCliente.id,
+          numero,
+          fecha: new Date().toISOString().split('T')[0],
+          fecha_vencimiento: fechaVencimiento || null,
+          estado: 'emitida',
+          subtotal,
+          total_iva: totalIva,
+          total,
+          notas: notas.trim() || null,
+        })
+        .select()
+        .single();
+
+      if (facturaError) throw facturaError;
+
+      // Insert items
+      const itemsToInsert = items.map((item, idx) => ({
+        factura_id: factura.id,
+        producto_id: item.producto_id || null,
+        descripcion: item.descripcion,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio_unitario,
+        iva: item.iva,
+        subtotal: item.subtotal,
+        total: item.total,
+        orden: idx,
+      }));
+
+      const { error: itemsError } = await supabase.from('factura_items').insert(itemsToInsert);
+      if (itemsError) throw itemsError;
+
+      Alert.alert('¡Factura creada!', `Número: ${numero}`, [
+        { text: 'Ver factura', onPress: () => router.replace(`/factura/${factura.id}`) },
+      ]);
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredClientes = clientes.filter(c =>
+    c.nombre.toLowerCase().includes(clienteSearch.toLowerCase())
+  );
+  const filteredProductos = productos.filter(p =>
+    p.nombre.toLowerCase().includes(productoSearch.toLowerCase())
+  );
+
+  // ── STEP INDICATOR ──────────────────────────────────────────
+  const STEPS: { key: Step; label: string }[] = [
+    { key: 'cliente', label: 'Cliente' },
+    { key: 'items', label: 'Ítems' },
+    { key: 'detalles', label: 'Detalles' },
+  ];
+
+  const StepIndicator = () => (
+    <View style={styles.stepIndicator}>
+      {STEPS.map((s, i) => {
+        const idx = STEPS.findIndex(x => x.key === step);
+        const done = i < idx;
+        const active = s.key === step;
+        return (
+          <View key={s.key} style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity
+              style={[styles.stepDot, active && styles.stepDotActive, done && styles.stepDotDone]}
+              onPress={() => {
+                if (done) setStep(s.key);
+                else if (active && s.key === 'items' && selectedCliente) setStep('items');
+                else if (active && s.key === 'detalles' && items.length > 0) setStep('detalles');
+              }}
+            >
+              {done
+                ? <Ionicons name="checkmark" size={14} color={Colors.white} />
+                : <Text style={[styles.stepNum, active && { color: Colors.white }]}>{i + 1}</Text>
+              }
+            </TouchableOpacity>
+            <Text style={[styles.stepLabel, active && { color: Colors.text, fontWeight: '700' }]}>{s.label}</Text>
+            {i < STEPS.length - 1 && <View style={[styles.stepLine, done && styles.stepLineDone]} />}
+          </View>
+        );
+      })}
+    </View>
+  );
+
+  // ── STEP 1: CLIENTE ─────────────────────────────────────────
+  if (step === 'cliente') {
+    return (
+      <View style={styles.container}>
+        <StepIndicator />
+        <TextInput
+          style={styles.search}
+          placeholder="Buscar cliente..."
+          placeholderTextColor={Colors.textMuted}
+          value={clienteSearch}
+          onChangeText={setClienteSearch}
+        />
+        <FlatList
+          data={filteredClientes}
+          keyExtractor={c => c.id}
+          contentContainerStyle={{ padding: 16, gap: 10 }}
+          renderItem={({ item: c }) => (
+            <TouchableOpacity
+              style={[styles.listCard, selectedCliente?.id === c.id && styles.listCardActive]}
+              onPress={() => {
+                setSelectedCliente(c);
+                setStep('items');
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.listCardLeft}>
+                <Text style={styles.listCardTitle}>{c.nombre}</Text>
+                {c.email && <Text style={styles.listCardSub}>{c.email}</Text>}
+                {c.nif && <Text style={styles.listCardSub}>{c.nif}</Text>}
+              </View>
+              {selectedCliente?.id === c.id && (
+                <Ionicons name="checkmark-circle" size={22} color={Colors.primary} />
+              )}
+            </TouchableOpacity>
+          )}
+          ListEmptyComponent={
+            <Text style={{ color: Colors.textMuted, textAlign: 'center', marginTop: 40 }}>
+              No hay clientes. Crea uno primero.
+            </Text>
+          }
+        />
+      </View>
+    );
+  }
+
+  // ── STEP 2: ITEMS ────────────────────────────────────────────
+  if (step === 'items') {
+    return (
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <StepIndicator />
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 160 }}>
+          {/* Selected Client */}
+          <TouchableOpacity style={styles.clienteChip} onPress={() => setStep('cliente')}>
+            <Ionicons name="person" size={15} color={Colors.primary} />
+            <Text style={styles.clienteChipText}>{selectedCliente?.nombre}</Text>
+            <Ionicons name="create-outline" size={14} color={Colors.textMuted} />
+          </TouchableOpacity>
+
+          {/* Items */}
+          {items.map((item, idx) => (
+            <View key={idx} style={styles.itemCard}>
+              <View style={styles.itemHeader}>
+                <Text style={styles.itemNum}>Ítem {idx + 1}</Text>
+                <TouchableOpacity onPress={() => removeItem(idx)}>
+                  <Ionicons name="trash-outline" size={16} color={Colors.error} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.itemInput}
+                placeholder="Descripción del producto/servicio"
+                placeholderTextColor={Colors.textMuted}
+                value={item.descripcion}
+                onChangeText={v => updateItem(idx, 'descripcion', v)}
+              />
+              <View style={styles.itemRow}>
+                <View style={styles.itemField}>
+                  <Text style={styles.itemFieldLabel}>Cantidad</Text>
+                  <TextInput
+                    style={styles.itemSmallInput}
+                    value={String(item.cantidad)}
+                    onChangeText={v => updateItem(idx, 'cantidad', Number(v) || 0)}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={styles.itemField}>
+                  <Text style={styles.itemFieldLabel}>Precio €</Text>
+                  <TextInput
+                    style={styles.itemSmallInput}
+                    value={String(item.precio_unitario)}
+                    onChangeText={v => updateItem(idx, 'precio_unitario', parseFloat(v) || 0)}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={styles.itemField}>
+                  <Text style={styles.itemFieldLabel}>IVA %</Text>
+                  <TextInput
+                    style={styles.itemSmallInput}
+                    value={String(item.iva)}
+                    onChangeText={v => updateItem(idx, 'iva', Number(v) || 0)}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.itemField}>
+                  <Text style={styles.itemFieldLabel}>Total</Text>
+                  <Text style={styles.itemTotal}>{formatUSD(item.total)}</Text>
+                </View>
+              </View>
+            </View>
+          ))}
+
+          {/* Add buttons */}
+          <View style={styles.addItemRow}>
+            <TouchableOpacity style={styles.addItemBtn} onPress={() => setShowProductoModal(true)}>
+              <Ionicons name="cube-outline" size={16} color={Colors.primary} />
+              <Text style={styles.addItemText}>Del catálogo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.addItemBtn} onPress={addItemManual}>
+              <Ionicons name="create-outline" size={16} color={Colors.primary} />
+              <Text style={styles.addItemText}>Manual</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Totals */}
+          {items.length > 0 && (
+            <View style={styles.totalsBox}>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Subtotal</Text>
+                <Text style={styles.totalValue}>{formatUSD(subtotal)}</Text>
+              </View>
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>IVA</Text>
+                <Text style={styles.totalValue}>{formatUSD(totalIva)}</Text>
+              </View>
+              <View style={[styles.totalRow, styles.totalFinal]}>
+                <Text style={styles.totalFinalLabel}>TOTAL</Text>
+                <Text style={styles.totalFinalValue}>{formatUSD(total)}</Text>
+              </View>
+            </View>
+          )}
+        </ScrollView>
+
+        {/* Next button */}
+        <View style={styles.bottomBar}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => setStep('cliente')}>
+            <Ionicons name="arrow-back" size={20} color={Colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.nextBtn, items.length === 0 && { opacity: 0.4 }]}
+            onPress={() => { if (items.length > 0) setStep('detalles'); }}
+            disabled={items.length === 0}
+          >
+            <Text style={styles.nextBtnText}>Siguiente</Text>
+            <Ionicons name="arrow-forward" size={18} color={Colors.white} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Producto modal */}
+        <Modal visible={showProductoModal} animationType="slide" presentationStyle="pageSheet">
+          <View style={styles.modal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Seleccionar producto</Text>
+              <TouchableOpacity onPress={() => setShowProductoModal(false)}>
+                <Ionicons name="close" size={24} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+            <TextInput
+              style={styles.modalSearch}
+              placeholder="Buscar..."
+              placeholderTextColor={Colors.textMuted}
+              value={productoSearch}
+              onChangeText={setProductoSearch}
+            />
+            <FlatList
+              data={filteredProductos}
+              keyExtractor={p => p.id}
+              contentContainerStyle={{ padding: 16, gap: 10 }}
+              renderItem={({ item: p }) => (
+                <TouchableOpacity style={styles.listCard} onPress={() => addProducto(p)} activeOpacity={0.8}>
+                  <View style={styles.listCardLeft}>
+                    <Text style={styles.listCardTitle}>{p.nombre}</Text>
+                    <Text style={styles.listCardSub}>{formatUSD(Number(p.precio))} / {p.unidad} · IVA {p.iva}%</Text>
+                  </View>
+                  <Ionicons name="add-circle" size={24} color={Colors.primary} />
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </Modal>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── STEP 3: DETALLES ─────────────────────────────────────────
+  return (
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <StepIndicator />
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 140 }}>
+        {/* Summary */}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryRow}>
+            <Ionicons name="person" size={14} color={Colors.textMuted} />
+            <Text style={styles.summaryText}>{selectedCliente?.nombre}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Ionicons name="list" size={14} color={Colors.textMuted} />
+            <Text style={styles.summaryText}>{items.length} ítem{items.length !== 1 ? 's' : ''}</Text>
+          </View>
+          <View style={styles.summaryRow}>
+            <Ionicons name="cash" size={14} color={Colors.primary} />
+            <Text style={[styles.summaryText, { color: Colors.primary, fontWeight: '700' }]}>
+              Total: {formatUSD(total)}
+            </Text>
+          </View>
+        </View>
+
+        {/* Fecha vencimiento */}
+        <View style={styles.group}>
+          <Text style={styles.label}>Fecha de vencimiento (opcional)</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="YYYY-MM-DD (ej: 2026-05-13)"
+            placeholderTextColor={Colors.textMuted}
+            value={fechaVencimiento}
+            onChangeText={setFechaVencimiento}
+            keyboardType="numeric"
+          />
+        </View>
+
+        {/* Notas */}
+        <View style={styles.group}>
+          <Text style={styles.label}>Notas / Condiciones de pago</Text>
+          <TextInput
+            style={[styles.input, styles.multiline]}
+            placeholder="Forma de pago, cuenta bancaria, observaciones..."
+            placeholderTextColor={Colors.textMuted}
+            value={notas}
+            onChangeText={setNotas}
+            multiline
+            numberOfLines={4}
+          />
+        </View>
+
+        {/* Totals preview */}
+        <View style={styles.totalsBox}>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Subtotal (base imponible)</Text>
+            <Text style={styles.totalValue}>{formatUSD(subtotal)}</Text>
+          </View>
+          <View style={styles.totalRow}>
+            <Text style={styles.totalLabel}>Total IVA</Text>
+            <Text style={styles.totalValue}>{formatUSD(totalIva)}</Text>
+          </View>
+          <View style={[styles.totalRow, styles.totalFinal]}>
+            <Text style={styles.totalFinalLabel}>TOTAL FACTURA</Text>
+            <Text style={styles.totalFinalValue}>{formatUSD(total)}</Text>
+          </View>
+        </View>
+      </ScrollView>
+
+      <View style={styles.bottomBar}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => setStep('items')}>
+          <Ionicons name="arrow-back" size={20} color={Colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.nextBtn, { backgroundColor: Colors.success }, loading && { opacity: 0.6 }]}
+          onPress={handleSubmit}
+          disabled={loading}
+        >
+          {loading
+            ? <ActivityIndicator color={Colors.white} size="small" />
+            : <>
+                <Ionicons name="checkmark-circle" size={18} color={Colors.white} />
+                <Text style={styles.nextBtnText}>Crear factura</Text>
+              </>
+          }
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+const getStyles = (Colors: any) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: Colors.background },
+
+  // Step Indicator
+  stepIndicator: {
+    flexDirection: 'row', alignItems: 'center',
+    padding: 16, paddingBottom: 8,
+    backgroundColor: Colors.surface, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  stepDot: {
+    width: 26, height: 26, borderRadius: 13,
+    backgroundColor: Colors.border, justifyContent: 'center', alignItems: 'center', marginRight: 6,
+  },
+  stepDotActive: { backgroundColor: Colors.primary },
+  stepDotDone: { backgroundColor: Colors.success },
+  stepNum: { fontSize: 12, color: Colors.textMuted, fontWeight: '700' },
+  stepLabel: { fontSize: 12, color: Colors.textMuted, marginRight: 6 },
+  stepLine: { width: 20, height: 2, backgroundColor: Colors.border, marginRight: 8 },
+  stepLineDone: { backgroundColor: Colors.success },
+
+  // Search
+  search: {
+    backgroundColor: Colors.surface, margin: 16, marginBottom: 8,
+    borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 14, height: 44, color: Colors.text, fontSize: 14,
+  },
+
+  // List cards
+  listCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.surface, borderRadius: 14,
+    padding: 16, borderWidth: 1, borderColor: Colors.border,
+  },
+  listCardActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryBg },
+  listCardLeft: { flex: 1 },
+  listCardTitle: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  listCardSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+
+  // Cliente chip
+  clienteChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: Colors.primaryBg, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.primary,
+    paddingHorizontal: 14, paddingVertical: 10, marginBottom: 16,
+  },
+  clienteChipText: { flex: 1, color: Colors.primary, fontWeight: '600', fontSize: 14 },
+
+  // Item cards
+  itemCard: {
+    backgroundColor: Colors.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: Colors.border,
+    padding: 14, marginBottom: 10,
+  },
+  itemHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+  itemNum: { fontSize: 12, color: Colors.textMuted, fontWeight: '600' },
+  itemInput: {
+    backgroundColor: Colors.background, borderRadius: 10,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 12, paddingVertical: 8,
+    color: Colors.text, fontSize: 14, marginBottom: 10,
+  },
+  itemRow: { flexDirection: 'row', gap: 8 },
+  itemField: { flex: 1, alignItems: 'center' },
+  itemFieldLabel: { fontSize: 10, color: Colors.textMuted, marginBottom: 4, fontWeight: '600' },
+  itemSmallInput: {
+    backgroundColor: Colors.background, borderRadius: 8,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 8, paddingVertical: 6,
+    color: Colors.text, fontSize: 13, textAlign: 'center', width: '100%',
+  },
+  itemTotal: { fontSize: 13, color: Colors.primary, fontWeight: '700', paddingVertical: 6 },
+
+  // Add item
+  addItemRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  addItemBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: Colors.primaryBg, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.primary, paddingVertical: 12,
+  },
+  addItemText: { color: Colors.primary, fontWeight: '600', fontSize: 14 },
+
+  // Totals
+  totalsBox: {
+    backgroundColor: Colors.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: Colors.border, padding: 16,
+  },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  totalLabel: { fontSize: 13, color: Colors.textSecondary },
+  totalValue: { fontSize: 13, color: Colors.text, fontWeight: '500' },
+  totalFinal: {
+    borderTopWidth: 1, borderTopColor: Colors.border,
+    paddingTop: 12, marginTop: 4, marginBottom: 0,
+  },
+  totalFinalLabel: { fontSize: 15, color: Colors.text, fontWeight: '700' },
+  totalFinalValue: { fontSize: 18, color: Colors.primary, fontWeight: '800' },
+
+  // Bottom bar
+  bottomBar: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    flexDirection: 'row', gap: 12, padding: 20,
+    backgroundColor: Colors.surface, borderTopWidth: 1, borderTopColor: Colors.border,
+  },
+  backBtn: {
+    width: 48, height: 48, borderRadius: 12,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  nextBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 12, height: 48,
+  },
+  nextBtnText: { color: Colors.white, fontSize: 15, fontWeight: '700' },
+
+  // Step 3
+  summaryCard: {
+    backgroundColor: Colors.surface, borderRadius: 14,
+    borderWidth: 1, borderColor: Colors.border, padding: 16, marginBottom: 20, gap: 8,
+  },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  summaryText: { fontSize: 14, color: Colors.textSecondary },
+  group: { marginBottom: 16 },
+  label: { fontSize: 13, color: Colors.textSecondary, fontWeight: '500', marginBottom: 7 },
+  input: {
+    backgroundColor: Colors.surface, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 14, paddingVertical: 11,
+    color: Colors.text, fontSize: 15,
+  },
+  multiline: { height: 100, textAlignVertical: 'top' },
+
+  // Modal
+  modal: { flex: 1, backgroundColor: Colors.background },
+  modalHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    padding: 20, borderBottomWidth: 1, borderBottomColor: Colors.border,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.text },
+  modalSearch: {
+    backgroundColor: Colors.surface, margin: 16, marginBottom: 0,
+    borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
+    paddingHorizontal: 14, height: 44, color: Colors.text, fontSize: 14,
+  },
+});

@@ -1,50 +1,55 @@
-import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { StyleSheet } from 'react-native';
-
-// Importamos las pantallas (las crearemos a continuación)
-import InventarioScreen from './src/screens/InventarioScreen';
-// Pantallas temporales para que la app no de error
-import { View, Text } from 'react-native';
-
-function PantallaInicio() {
-  return (
-    <View style={styles.center}><Text>Dashboard de System RISAN</Text></View>
-  );
+{
+  "expo": {
+    "name": "mi-app-pos",
+    "slug": "mi-app-pos",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "myapp",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/1dffa06f-c1fb-423d-b5d3-2b71edcc73ad"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.rizz2001.miapppos",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1dffa06f-c1fb-423d-b5d3-2b71edcc73ad"
+      }
+    }
+  }
 }
-
-function PantallaVentas() {
-  return (
-    <View style={styles.center}><Text>Punto de Venta</Text></View>
-  );
-}
-
-const Tab = createBottomTabNavigator();
-
-export default function App() {
-  return (
-    <NavigationContainer>
-      <Tab.Navigator
-        screenOptions={{
-          tabBarActiveTintColor: '#f97316', // Naranja para el icono activo
-          tabBarInactiveTintColor: 'gray',
-          headerTitle: "System RISAN",    // Nombre del sistema en la cabecera
-          headerStyle: {
-            backgroundColor: '#0d9488',    // Color Teal profesional
-          },
-          headerTintColor: '#fff',         // Texto blanco en cabecera
-          headerTitleStyle: { fontWeight: 'bold', fontSize: 22 },
-        }}
-      >
-        <Tab.Screen name="Inicio" component={PantallaInicio} />
-        <Tab.Screen name="Ventas" component={PantallaVentas} />
-        <Tab.Screen name="Inventario" component={InventarioScreen} />
-      </Tab.Navigator>
-    </NavigationContainer>
-  );
-}
-
-const styles = StyleSheet.create({
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center' }
-});
