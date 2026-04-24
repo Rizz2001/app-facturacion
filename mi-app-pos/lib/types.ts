@@ -161,3 +161,67 @@ export interface ClienteDeuda {
   total_deuda: number;
   num_facturas: number;
 }
+
+// ─── Módulo Compras ────────────────────────────────────────────────────────────
+
+export interface Proveedor {
+  id: string;
+  owner_id: string;
+  nombre: string;
+  rif?: string;
+  telefono?: string;
+  email?: string;
+  direccion?: string;
+  ciudad?: string;
+  notas?: string;
+  activo: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type EstadoCompra = 'pendiente' | 'parcial' | 'pagada' | 'cancelada';
+
+export interface Compra {
+  id: string;
+  owner_id: string;
+  proveedor_id?: string | null;
+  numero: string;
+  fecha: string;
+  fecha_vencimiento?: string | null;
+  estado: EstadoCompra;
+  subtotal: number;
+  total: number;
+  monto_pagado: number;
+  notas?: string;
+  registrada_por?: string | null;
+  created_at: string;
+  updated_at: string;
+  // joins
+  proveedores?: Proveedor;
+  compra_items?: CompraItem[];
+}
+
+export interface CompraItem {
+  id?: string;
+  compra_id?: string;
+  producto_id?: string | null;
+  descripcion: string;
+  cantidad: number;
+  precio_unitario: number;
+  subtotal: number;
+  orden: number;
+  // join
+  productos?: { nombre: string };
+}
+
+export interface PagoCompra {
+  id: string;
+  compra_id: string;
+  fecha: string;
+  monto: number;
+  metodo: string;
+  referencia?: string;
+  notas?: string;
+  created_at: string;
+}
+

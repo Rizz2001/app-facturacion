@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
@@ -13,31 +13,28 @@ import { useTheme } from '@/context/ThemeContext';
 const STORAGE_CREDS = '@saved_credentials';
 
 export default function LoginScreen() {
-  const { colors, theme, setTheme, isDark } = useTheme();
-  const Colors = colors;
-  const styles = React.useMemo(() => getStyles(Colors), [Colors]);
+  const { colors: C } = useTheme();
+  const styles = React.useMemo(() => getStyles(C), [C]);
   const { signIn } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [recordar, setRecordar] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // Cargar credenciales guardadas al abrir
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_CREDS).then((raw) => {
       if (raw) {
         const { email: e, password: p } = JSON.parse(raw);
-        setEmail(e);
-        setPassword(p);
-        setRecordar(true);
+        setEmail(e); setPassword(p); setRecordar(true);
       }
     });
   }, []);
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
-      Alert.alert('Error', 'Por favor completa todos los campos');
+      Alert.alert('Campos requeridos', 'Por favor completa tu correo y contraseña.');
       return;
     }
     try {
@@ -49,7 +46,6 @@ export default function LoginScreen() {
       }
       await signIn(email.trim(), password);
     } catch (error: any) {
-      console.error('Error al iniciar sesion (Login):', error);
       Alert.alert('Error al iniciar sesión', error.message || 'Comprueba tus credenciales');
     } finally {
       setLoading(false);
@@ -57,38 +53,39 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.logoCircle}>
-            <Ionicons name="cart" size={36} color={Colors.primary} />
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+
+        {/* ── Logo / Brand ─────────────────── */}
+        <View style={styles.brand}>
+          <View style={styles.logoWrap}>
+            <Ionicons name="cart" size={38} color={C.primary} />
           </View>
           <Text style={styles.appName}>System RISAN</Text>
-          <Text style={styles.subtitle}>Punto de Venta · Venezuela</Text>
+          <Text style={styles.tagline}>Punto de Venta · Venezuela</Text>
         </View>
 
-        {/* Card */}
+        {/* ── Card ─────────────────────────── */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Iniciar Sesión</Text>
+          <Text style={styles.cardTitle}>Bienvenido 👋</Text>
+          <Text style={styles.cardSubtitle}>Inicia sesión para continuar</Text>
 
           {/* Email */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Correo electrónico</Text>
-            <View style={styles.inputWrapper}>
-              <Ionicons name="mail-outline" size={18} color={Colors.textMuted} style={styles.inputIcon} />
+            <View style={[styles.inputWrap, focusedField === 'email' && styles.inputWrapFocused]}>
+              <Ionicons name="mail-outline" size={17} color={focusedField === 'email' ? C.primary : C.textMuted} />
               <TextInput
                 style={styles.input}
                 placeholder="tu@email.com"
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={C.textMuted}
                 value={email}
                 onChangeText={setEmail}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoComplete="email"
+                onFocus={() => setFocusedField('email')}
+                onBlur={() => setFocusedField(null)}
               />
             </View>
           </View>
@@ -96,56 +93,56 @@ export default function LoginScreen() {
           {/* Password */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Contraseña</Text>
-            <View style={styles.inputWrapper}>
-              <Ionicons name="lock-closed-outline" size={18} color={Colors.textMuted} style={styles.inputIcon} />
+            <View style={[styles.inputWrap, focusedField === 'pass' && styles.inputWrapFocused]}>
+              <Ionicons name="lock-closed-outline" size={17} color={focusedField === 'pass' ? C.primary : C.textMuted} />
               <TextInput
-                style={[styles.input, styles.inputFlex]}
+                style={[styles.input, { flex: 1 }]}
                 placeholder="••••••••"
-                placeholderTextColor={Colors.textMuted}
+                placeholderTextColor={C.textMuted}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
+                onFocus={() => setFocusedField('pass')}
+                onBlur={() => setFocusedField(null)}
               />
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
+              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={{ padding: 4 }}>
                 <Ionicons
                   name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={18}
-                  color={Colors.textMuted}
+                  size={17}
+                  color={C.textMuted}
                 />
               </TouchableOpacity>
             </View>
           </View>
 
           {/* Recordarme */}
-          <TouchableOpacity
-            style={styles.recordarRow}
-            onPress={() => setRecordar(!recordar)}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.checkbox, recordar && styles.checkboxActive]}>
-              {recordar && <Ionicons name="checkmark" size={13} color={Colors.white} />}
+          <TouchableOpacity style={styles.recordarRow} onPress={() => setRecordar(!recordar)} activeOpacity={0.7}>
+            <View style={[styles.checkbox, recordar && { backgroundColor: C.primary, borderColor: C.primary }]}>
+              {recordar && <Ionicons name="checkmark" size={12} color="#fff" />}
             </View>
             <Text style={styles.recordarText}>Recordar mis credenciales</Text>
           </TouchableOpacity>
 
-          {/* Botón login */}
+          {/* Botón */}
           <TouchableOpacity
-            style={[styles.btn, loading && styles.btnDisabled]}
+            style={[styles.btn, loading && { opacity: 0.65 }]}
             onPress={handleLogin}
             disabled={loading}
             activeOpacity={0.85}
           >
-            {loading ? (
-              <ActivityIndicator color={Colors.white} size="small" />
-            ) : (
-              <Text style={styles.btnText}>Iniciar sesión</Text>
-            )}
+            {loading
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <>
+                  <Text style={styles.btnText}>Iniciar sesión</Text>
+                  <Ionicons name="arrow-forward" size={18} color="#fff" />
+                </>
+            }
           </TouchableOpacity>
 
-          {/* Registro */}
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>¿Aún no tienes cuenta? </Text>
+          {/* Link a registro */}
+          <View style={styles.footerRow}>
+            <Text style={styles.footerText}>¿Sin cuenta? </Text>
             <Link href="/(auth)/register" asChild>
               <TouchableOpacity>
                 <Text style={styles.footerLink}>Regístrate</Text>
@@ -153,66 +150,87 @@ export default function LoginScreen() {
             </Link>
           </View>
         </View>
+
+        {/* ── Powered by ───────────────────── */}
+        <Text style={styles.powered}>Powered by Supabase · Expo</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-const getStyles = (Colors: any) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  scroll: { flexGrow: 1, justifyContent: 'center', padding: 24 },
+const getStyles = (C: any) => StyleSheet.create({
+  root:   { flex: 1, backgroundColor: C.background },
+  scroll: { flexGrow: 1, justifyContent: 'center', padding: 24, paddingBottom: 40 },
 
-  header: { alignItems: 'center', marginBottom: 32 },
-  logoCircle: {
-    width: 80, height: 80, borderRadius: 24,
-    backgroundColor: Colors.primaryBg,
+  // Brand
+  brand:    { alignItems: 'center', marginBottom: 28 },
+  logoWrap: {
+    width: 84, height: 84, borderRadius: 26,
+    backgroundColor: C.primaryBg,
     justifyContent: 'center', alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 14,
+    shadowColor: C.primary,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    elevation: 6,
   },
-  appName: { fontSize: 30, fontWeight: '800', color: Colors.text, letterSpacing: -0.5 },
-  subtitle: { fontSize: 13, color: Colors.textSecondary, marginTop: 4 },
+  appName: { fontSize: 30, fontWeight: '800', color: C.text, letterSpacing: -0.5 },
+  tagline: { fontSize: 13, color: C.textMuted, marginTop: 5, fontWeight: '500' },
 
+  // Card
   card: {
-    backgroundColor: Colors.surface,
-    borderRadius: 20, padding: 24,
-    borderWidth: 1, borderColor: Colors.border,
+    backgroundColor: C.surface,
+    borderRadius: 24, padding: 24,
+    borderWidth: 1, borderColor: C.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 4,
   },
-  cardTitle: { fontSize: 20, fontWeight: '700', color: Colors.text, marginBottom: 24 },
+  cardTitle:    { fontSize: 22, fontWeight: '800', color: C.text, marginBottom: 4 },
+  cardSubtitle: { fontSize: 14, color: C.textSecondary, marginBottom: 24 },
 
+  // Inputs
   inputGroup: { marginBottom: 16 },
-  label: { fontSize: 13, color: Colors.textSecondary, marginBottom: 8, fontWeight: '500' },
-  inputWrapper: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.background,
-    borderRadius: 12, borderWidth: 1, borderColor: Colors.border,
-    paddingHorizontal: 12, height: 48,
-  },
-  inputIcon: { marginRight: 8 },
-  input: { flex: 1, color: Colors.text, fontSize: 15 },
-  inputFlex: { flex: 1 },
-  eyeBtn: { padding: 4 },
-
-  recordarRow: {
+  label:      { fontSize: 13, color: C.textSecondary, marginBottom: 7, fontWeight: '600' },
+  inputWrap: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    marginBottom: 20, marginTop: 2,
+    backgroundColor: C.background,
+    borderRadius: 13, borderWidth: 1.5, borderColor: C.border,
+    paddingHorizontal: 14, height: 50,
   },
-  checkbox: {
+  inputWrapFocused: { borderColor: C.primary, backgroundColor: C.primaryBg },
+  input:  { flex: 1, color: C.text, fontSize: 15 },
+
+  // Checkbox
+  recordarRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 22 },
+  checkbox:    {
     width: 20, height: 20, borderRadius: 6,
-    borderWidth: 1.5, borderColor: Colors.border,
-    backgroundColor: Colors.background,
+    borderWidth: 1.5, borderColor: C.border,
+    backgroundColor: C.background,
     justifyContent: 'center', alignItems: 'center',
   },
-  checkboxActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  recordarText: { fontSize: 14, color: Colors.textSecondary },
+  recordarText: { fontSize: 13, color: C.textSecondary },
 
+  // Button
   btn: {
-    backgroundColor: Colors.primary, borderRadius: 12,
-    height: 50, justifyContent: 'center', alignItems: 'center', marginTop: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: C.primary, borderRadius: 14,
+    height: 52,
+    shadowColor: C.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 5,
   },
-  btnDisabled: { opacity: 0.6 },
-  btnText: { color: Colors.white, fontSize: 16, fontWeight: '700' },
+  btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
 
-  footer: { flexDirection: 'row', justifyContent: 'center', marginTop: 20 },
-  footerText: { color: Colors.textSecondary, fontSize: 14 },
-  footerLink: { color: Colors.primary, fontSize: 14, fontWeight: '600' },
+  // Footer
+  footerRow:  { flexDirection: 'row', justifyContent: 'center', marginTop: 20 },
+  footerText: { color: C.textSecondary, fontSize: 14 },
+  footerLink: { color: C.primary, fontSize: 14, fontWeight: '700' },
+
+  powered: { textAlign: 'center', color: C.textMuted, fontSize: 11, marginTop: 24 },
 });

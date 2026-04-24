@@ -72,8 +72,17 @@ function RootLayoutNav() {
             headerTitleStyle: { fontWeight: '700' },
           }}
         />
-        <Stack.Screen name="mis-ventas" options={{ headerShown: false }} />
-        <Stack.Screen name="sucursales" options={{ headerShown: false }} />
+        <Stack.Screen name="mis-ventas"       options={{ headerShown: false }} />
+        <Stack.Screen name="sucursales"        options={{ headerShown: false }} />
+        <Stack.Screen name="empleados"         options={{ headerShown: false }} />
+        {/* ── Compras ── */}
+        <Stack.Screen name="compras/index"     options={{ headerShown: false }} />
+        <Stack.Screen name="compras/nueva"     options={{ headerShown: false }} />
+        <Stack.Screen name="compras/[id]"      options={{ headerShown: false }} />
+        {/* ── Proveedores ── */}
+        <Stack.Screen name="proveedores/index" options={{ headerShown: false }} />
+        <Stack.Screen name="proveedores/nuevo" options={{ headerShown: false }} />
+        <Stack.Screen name="proveedores/[id]"  options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={isDark ? "light" : "dark"} />
     </>

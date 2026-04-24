@@ -58,6 +58,11 @@ export interface PendingSale {
   referencia: string;
   notas: string;
   tasa: number;
+  payments?: {
+    metodo: string;
+    monto: number;
+    notas: string;
+  }[];
 }
 
 interface OfflineContextType {
@@ -164,12 +169,23 @@ export function OfflineProvider({ children }: { children: React.ReactNode }) {
 
           // Insertar pago si no era fiado
           if (sale.estado === 'pagada') {
-            await supabase.from('pagos').insert({
-              factura_id: factura.id,
-              monto: sale.total,
-              metodo: sale.metodo,
-              notas: sale.referencia ? `Ref: ${sale.referencia}` : 'Pago offline sincronizado',
-            });
+            if (sale.payments && sale.payments.length > 0) {
+              for (const p of sale.payments) {
+                await supabase.from('pagos').insert({
+                  factura_id: factura.id,
+                  monto: p.monto,
+                  metodo: p.metodo,
+                  notas: p.notas + ' | [SYNC OFFLINE]',
+                });
+              }
+            } else {
+              await supabase.from('pagos').insert({
+                factura_id: factura.id,
+                monto: sale.total,
+                metodo: sale.metodo,
+                notas: sale.referencia ? `Ref: ${sale.referencia}` : 'Pago offline sincronizado',
+              });
+            }
           }
 
           synced++;
